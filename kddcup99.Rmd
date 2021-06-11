@@ -1,0 +1,269 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Intrusion Detection using KDD CUP 99 Dataset
+
+KDD CUP 99 dataset is one of the most frequently used dataset for intrusion detection in academic literature. 
+
+## Dataset description
+
+The dataset was originally created in 1999 at MIT’s Lincoln Laboratory during a a DARPA sponsored event, where an attack scenario to Air-Force base is simulated. First two weeks were attack free; therefore, it is suitable for training anomaly detection algorithms. Next five weeks, various attack was used against simulated air-force base. Resulting TCP dump files was filtered to extract features, and resulting dataset was given to Knowledge Discovery and Data Mining (KDD) yearly competition. Dataset consists of 2 main files, one for training and another for testing.
+
+```{r}
+library(data.table)
+train <- fread('kddcup.data', showProgress = FALSE)
+#train <- fread('kddcup.data_10_percent', showProgress = FALSE)
+test <- fread('kddcup.test')
+col_names <- fread('kddcup.names', skip = 1, header = FALSE, sep = ':')
+setnames(train, new = c(col_names[, V1], 'outcome'))
+setnames(test, new = c(col_names[, V1], 'outcome'))
+```
+### Size
+
+Training dataset has over 4 million observations. However, due to high redundancy(78%), only 1,074,992 are unique data points.
+
+Test data has over 300k observations.
+
+```{r}
+dim(train)
+```
+```{r}
+train.dedup <- unique(train)
+nrow(train.dedup)
+```
+
+Test dataset has 311,029 patterns and no redundancy.
+
+```{r}
+dim(test)
+```
+
+### Features
+
+There are 41 variables. However, some of these variables are highly correlated.
+
+```{r warning=FALSE}
+symbolic_vars <- c("outcome", col_names[grepl("symbolic", V2), V1])
+numeric_vars <- setdiff(col_names[, V1], symbolic_vars)
+correlation_matrix <- combn(numeric_vars, 2, 
+                            FUN = function(x) 
+                              c(x, cor(train[, ..x])[1L, 2L]), 
+                            simplify = FALSE)
+correlationDF <- data.table(do.call(rbind, correlation_matrix))
+correlationDF[ , correlation := round(as.numeric(V3), 
+                                      digits = 2)][ , V3 := NULL]
+correlationDF[order(-correlation)][1:30]
+```
+
+### Target classes
+
+Dataset has five classes for output variable: Four types of attacks and normal connection. Attacks are classified as follows:
+
+DOS: denial-of-service, e.g. syn flood;
+R2L: unauthorized access from a remote machine, e.g. guessing password;
+U2R:  unauthorized access to local superuser (root) privileges, e.g., various ``buffer overflow'' attacks;
+probing: surveillance and other probing, e.g., port scanning.
+  
+Each intrusion is sub-classified into specific type of attack: 24 attack types for training data, and an additional 14 types in the test data only. Further, test data is not from the same probability distribution as the training data, and it includes specific attack types not in the training data. This makes the task more realistic. 
+
+Only the sub-classes are present in the dataset. Main attack classes have to be derived and encoded into the data frame.
+
+```{r}
+DoS <- c("back", "land", "neptune", "pod", "smurf", "teardrop",
+         "apache2", "udpstorm", "processtable", "worm", "mailbomb")
+Probe <- c("satan", "ipsweep", "nmap", "portsweep", "mscan", "saint")
+R2L <- c("guess_passwd", "ftp_write", "imap", "phf", "multihop",
+         "warezmaster", "xsnoop", "xlock", "snmpguess", "snmpgetattack",
+         "httptunnel", "sendmail", "named", "warezclient", "spy")
+U2R <- c("buffer_overflow", "loadmodule", "rootkit", "perl", "xterm",
+         "sqlattack", "ps")
+attack_map <- function(atype) {
+  atype_ <- sub("\\.", "", atype)
+  if (atype_ %in% DoS) { return("DoS") }
+  if (atype_ %in% Probe) { return("Probe") }
+  if (atype_ %in% R2L) { return("R2L") }
+  if (atype_ %in% U2R) { return("U2R") }
+  if (atype_ == "normal") { return("normal") }
+  stop(paste("Unknow attack type", atype))
+}
+train[, outcome := sapply(outcome, attack_map)]
+test[, outcome := sapply(outcome, attack_map)]
+```
+
+
+The patterns are highly skewed training dataset. From the table below it is evident that 99% of the data belongs to either the Normal or DoS categories.
+
+```{r}
+data.table(Class = names(table(train$outcome)),
+           "Training Set" = c(table(train$outcome)))[,
+              Percentage := round(`Training Set`/sum(`Training Set`)*100,
+                                   digits = 3)
+           ][, "Test Set" := c(table(test$outcome))
+           ][, "Percentage (Test)" := round(`Test Set`/sum(`Test Set`)*100,
+                                   digits = 3)][]
+```
+
+## Methodology
+
+Various machine learning techniques have been utilized to measure classification performance and their characteristics are highlighted.
+
+
+### Preprocessing and Feature Selection
+
+Both training and test datasets have variables with string values. They are mapped to factors.
+
+```{r}
+train[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+test[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+```
+
+
+
+```{r}
+head(train)
+```
+```{r}
+?unique
+```
+
+```{r}
+nrow(train)
+```
+```{r}
+nrow(unique(train))
+```
+```{r}
+train.dedup <- unique(train)
+nrow(train.dedup)
+```
+```{r}
+any(is.na(train))
+```
+
+```{r}
+col_names <- fread('kddcup.names', skip = 1, header = FALSE, sep = ':')
+col_names
+```
+
+```{r}
+setnames(train, new = c(col_names[, V1], 'outcome'))
+#symbolic_vars <- c("outcome", col_names[grepl("symbolic", V2), V1])
+#train[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+train
+setnames(test, new = c(col_names[, V1], 'outcome'))
+#symbolic_vars <- c("outcome", col_names[grepl("symbolic", V2), V1])#test[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+test
+```
+
+```{r}
+DoS <- c("back", "land", "neptune", "pod", "smurf", "teardrop",
+         "apache2", "udpstorm", "processtable", "worm", "mailbomb")
+Probe <- c("satan", "ipsweep", "nmap", "portsweep", "mscan", "saint")
+R2L <- c("guess_passwd", "ftp_write", "imap", "phf", "multihop",
+         "warezmaster", "xsnoop", "xlock", "snmpguess", "snmpgetattack",
+         "httptunnel", "sendmail", "named", "warezclient", "spy")
+U2R <- c("buffer_overflow", "loadmodule", "rootkit", "perl", "xterm",
+         "sqlattack", "ps")
+attack_map <- function(atype) {
+  atype_ <- sub("\\.", "", atype)
+  if (atype_ %in% DoS) { return("DoS") }
+  if (atype_ %in% Probe) { return("Probe") }
+  if (atype_ %in% R2L) { return("R2L") }
+  if (atype_ %in% U2R) { return("U2R") }
+  if (atype_ == "normal") { return("normal") }
+  stop(paste("Unknow attack type", atype))
+}
+```
+
+```{r}
+train[, outcome := sapply(outcome, attack_map)]
+test[, outcome := sapply(outcome, attack_map)]
+```
+```{r}
+symbolic_vars <- c("outcome", col_names[grepl("symbolic", V2), V1])
+train[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+test[, (symbolic_vars) := lapply(.SD, as.factor), .SDcols = symbolic_vars]
+```
+```{r}
+table(test$outcome)
+```
+
+
+
+normalize
+
+NOT linearly separable
+
+```{r}
+set.seed (1)
+x=matrix(rnorm(20*2), ncol=2)
+y=c(rep(-1,10), rep(1,10))
+x[y==1,]=x[y==1,] + 1
+plot(x, col=(3-y))
+```
+
+```{r}
+dat=data.frame(x=x, y=as.factor(y))
+svmfit=svm(y~., data=dat, kernel="linear", cost=10, scale=FALSE)
+plot(svmfit , dat)
+```
+
+```{r}
+library(e1071)
+```
+
+```{r}
+table(train$outcome)
+```
+```{r}
+test <- fread('kddcup.test')
+table(test$V42)
+unique(test$V42)
+```
+
+
+```{r}
+test[, attack_type := attack_type(outcome)]
+```
+```{r}
+str(train)
+```
+
+```{r}
+str(train)
+svmfit=svm(outcome~., data=train[, -c("is_host_login")], kernel="radial", cost=10, gamma=1)
+```
+
+A good way to handle this problem is to standardize the data so that all variables are given a mean of zero and a standard deviation of one. 
+
+
+```{r}
+train[, `:=`(is_host_login = NULL, num_outbound_cmds = NULL)]
+test[, `:=`(is_host_login = NULL, num_outbound_cmds = NULL)]
+symbolic_vars <- symbolic_vars[!(symbolic_vars %in% 
+                                   c("is_host_login", "num_outbound_cmds"))]
+```
+```{r}
+#scale(train[, -c("outcome")])
+test.std <- data.table(scale(test[, -..symbolic_vars]))
+any(is.na(test.std))
+#sapply(test.std, is.na)
+complete.cases(test.std)
+test.std
+table(test$num_outbound_cmds)
+```
+
+
+Error in knn(train.std, test.std, train$outcome, k = 1) :
+  too many ties in knn
+  
+  
+
+```{r}
+vars <- names(test)
+formula_str <- paste("outcome ~", paste(vars[-length(vars)], collapse = " + "))
+
+```
+
